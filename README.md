@@ -9,6 +9,44 @@ backend/   FastAPI アプリケーション（REST API, Excel 取込, 分岐点�
 frontend/  Next.js 14 + TypeScript + MUI フロントエンド
 ```
 
+### ディレクトリとコードの詳解
+
+以下は、各ディレクトリ内の主なファイルと役割を初心者向けに説明したものです。迷ったときの地図として活用してください。
+
+#### backend/
+
+- `app/`
+  - `main.py`：FastAPI のエントリーポイントです。価格シミュレーション・分岐点計算・Excel 取込の各エンドポイントを定義し、共通の丸め処理や CORS 設定もここで行います。
+  - `config.py`：環境変数から API の設定値（例：CORS 許可リスト、データベース接続 URL）を読み込みます。設定の一元管理を行うファイルです。
+  - `database.py`：SQLAlchemy を使って PostgreSQL へ接続するための共通処理（エンジン生成、セッション提供）をまとめています。
+  - `models.py`：SQLAlchemy の ORM モデル定義です。Supabase に作成するテーブル（`products` や `sales_data` など）のカラムと型をクラスで表現しています。
+  - `schemas.py`：Pydantic による入出力の型定義です。API が受け取る JSON と返す JSON の「形」をコードで保証し、バリデーションも兼ねます。
+  - `crud.py`：DB からの集計や保存処理を関数として分離しています。`get_fixed_cost_total` や `get_sales_summary` など、アプリ固有のデータアクセスがまとまっています。
+  - `utils.py`：金額の四捨五入や粗利パターンの生成など、複数のエンドポイントから使われる小さな便利関数を置いています。
+- `requirements.txt`
+  - バックエンドで利用する Python ライブラリの一覧です。仮想環境を作成した後、このファイルを `pip install -r requirements.txt` で読み込むと必要な依存関係がそろいます。
+- `sql/`
+  - `001_initial_schema.sql`：Supabase で最初に実行する SQL スクリプトです。必要なテーブルをまとめて作成します。README のサンプル INSERT と合わせて初期データを投入できます。
+- `tests/`
+  - `conftest.py`：pytest の共通セットアップです。テスト用のアプリケーションインスタンスやダミーデータを定義しています。
+  - `test_price_simulation.py`：価格計算 API が仕様通りの値を返すかを確認する自動テストです。分岐点計算・Excel 取込のチェックも含まれています。
+
+#### frontend/
+
+- `app/`
+  - `page.tsx`：トップページのコンポーネントです。価格シミュレーションフォーム、分岐点ダッシュボード、Excel 取込 UI を表示します。ユーザー操作に応じて API から取得したデータを画面に反映する中心的なファイルです。
+  - `layout.tsx`：Next.js のレイアウトコンポーネントです。全ページ共通で適用する `<html>` 構造やヘッダー要素を定義しています。
+  - `globals.css`：全体に適用するスタイル定義です。背景色や基本フォントなど、UI の共通デザインを整えます。
+- `components/`
+  - `ThemeRegistry.tsx`：MUI のテーマ設定（色・フォント）と SSR 対応をまとめたコンポーネントです。`app/layout.tsx` から読み込まれ、全コンポーネントに同じテーマを行き渡らせます。
+- `lib/`
+  - `api.ts`：フロントエンドから FastAPI にアクセスするための関数を集めたファイルです。`fetchPriceSimulation` や `fetchBreakEven` など、HTTP リクエストを送る処理を共通化しています。
+- `package.json`
+  - フロントエンドで使う npm パッケージとスクリプトの定義です。`npm run dev` や `npm run build` といったコマンドはここで管理されています。
+- `tsconfig.json`
+  - TypeScript のコンパイル設定です。`paths` や `strict` モードを通じて、型チェックと開発体験を調整しています。
+
+
 ## セットアップ
 
 ### 前提条件
