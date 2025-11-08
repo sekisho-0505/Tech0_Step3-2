@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Iterable, Optional
+from decimal import Decimal
+from typing import Optional, Tuple
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
@@ -9,22 +10,30 @@ from sqlalchemy.orm import Session
 from .models import FixedCost, Product, SalesData
 
 
-def get_fixed_cost_total(session: Session, month: date) -> float:
+def _as_decimal(value: object) -> Decimal:
+    """Convert DB aggregation results to ``Decimal`` safely."""
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
+def get_fixed_cost_total(session: Session, month: date) -> Decimal:
     stmt: Select = select(func.coalesce(func.sum(FixedCost.amount), 0)).where(
         FixedCost.year_month == month
     )
-    return float(session.execute(stmt).scalar_one())
+    result = session.execute(stmt).scalar_one()
+    return _as_decimal(result)
 
 
-def get_sales_summary(session: Session, start: date, end: date) -> tuple[float, float]:
+def get_sales_summary(session: Session, start: date, end: date) -> Tuple[Decimal, Decimal]:
     revenue_stmt: Select = select(
         func.coalesce(func.sum(SalesData.quantity_kg * SalesData.unit_price_per_kg), 0)
     ).where(SalesData.sale_date >= start, SalesData.sale_date < end)
     variable_cost_stmt: Select = select(
         func.coalesce(func.sum(SalesData.quantity_kg * SalesData.unit_cost_per_kg), 0)
     ).where(SalesData.sale_date >= start, SalesData.sale_date < end)
-    revenue = float(session.execute(revenue_stmt).scalar_one())
-    variable_cost = float(session.execute(variable_cost_stmt).scalar_one())
+    revenue = _as_decimal(session.execute(revenue_stmt).scalar_one())
+    variable_cost = _as_decimal(session.execute(variable_cost_stmt).scalar_one())
     return revenue, variable_cost
 
 
