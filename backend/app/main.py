@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -37,7 +38,7 @@ Base.metadata.create_all(bind=engine)
 ERROR_INVALID_PARAM = {
     "error": {
         "code": "INVALID_PARAM",
-        "message": "target_margin_rate must be between 0 and 0.9",
+        "message": "入力値が不正です",
     }
 }
 
@@ -56,27 +57,64 @@ DEFAULT_COLUMN_MAPPING = {
 def calculate_price_simulation(
     payload: PriceSimulationRequest,
 ) -> PriceSimulationResponse:
-    target_margin_rate = payload.target_margin_rate
-    if not (0 < target_margin_rate < 0.9):
-        raise HTTPException(status_code=400, detail=ERROR_INVALID_PARAM)
+    try:
+        unit_cost = Decimal(str(payload.unit_cost_per_kg))
+        target_margin_rate = Decimal(str(payload.target_margin_rate))
+        quantity = (
+            Decimal(str(payload.quantity_kg))
+            if payload.quantity_kg is not None
+            else None
+        )
+    except (InvalidOperation, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=ERROR_INVALID_PARAM) from exc
 
-    recommended_price = payload.unit_cost_per_kg / (1.0 - target_margin_rate)
-    gross_profit_per_kg = recommended_price - payload.unit_cost_per_kg
+    if unit_cost <= Decimal("0"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_PARAM",
+                    "message": "unit_cost_per_kg must be greater than 0",
+                }
+            },
+        )
+    if target_margin_rate < Decimal("0") or target_margin_rate >= Decimal("1"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_PARAM",
+                    "message": "target_margin_rate must be between 0.0 and 0.9",
+                }
+            },
+        )
+    if quantity is not None and quantity < Decimal("0"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_PARAM",
+                    "message": "quantity_kg must be greater than or equal to 0",
+                }
+            },
+        )
+
+    one = Decimal("1")
+    recommended_price = unit_cost / (one - target_margin_rate)
+    gross_profit_per_kg = recommended_price - unit_cost
 
     price_patterns = [
         {
-            "margin_rate": margin_rate,
+            "margin_rate": float(round_rate(margin_rate)),
             "price_per_kg": price_per_kg,
             "profit_per_kg": profit_per_kg,
         }
-        for margin_rate, price_per_kg, profit_per_kg in generate_price_patterns(
-            payload.unit_cost_per_kg
-        )
+        for margin_rate, price_per_kg, profit_per_kg in generate_price_patterns(unit_cost)
     ]
 
-    total_profit = 0
-    if payload.quantity_kg:
-        total_profit = gross_profit_per_kg * payload.quantity_kg
+    gross_profit_total: Optional[int] = None
+    if quantity is not None:
+        gross_profit_total = round_jpy(gross_profit_per_kg * quantity)
 
     recommended_price_rounded = round_jpy(recommended_price)
     gross_profit_per_kg_rounded = round_jpy(gross_profit_per_kg)
@@ -84,12 +122,13 @@ def calculate_price_simulation(
     return PriceSimulationResponse(
         recommended_price_per_kg=recommended_price_rounded,
         gross_profit_per_kg=gross_profit_per_kg_rounded,
-        gross_profit_total=round_jpy(total_profit) if payload.quantity_kg else 0,
-        margin_rate=target_margin_rate,
+        gross_profit_total=gross_profit_total,
+        margin_rate=float(round_rate(target_margin_rate)),
         price_patterns=price_patterns,
         guard={
             "min_allowed_price_per_kg": recommended_price_rounded,
             "is_below_min": False,
+            "warning_message": None,
         },
     )
 
@@ -118,23 +157,31 @@ def get_break_even(
     fixed_cost_total = crud.get_fixed_cost_total(session, month_start)
     revenue, variable_cost = crud.get_sales_summary(session, month_start, month_end)
 
-    variable_cost_rate = round_rate(variable_cost / revenue) if revenue > 0 else 0.0
-    gross_margin_rate_raw = 1.0 - (variable_cost / revenue if revenue > 0 else 0.0)
-    gross_margin_rate = round_rate(gross_margin_rate_raw) if gross_margin_rate_raw else 0.0
+    variable_cost_rate = (
+        round_rate(variable_cost / revenue) if revenue > 0 else Decimal("0")
+    )
+    gross_margin_rate_raw = (
+        Decimal("1") - (variable_cost / revenue if revenue > 0 else Decimal("0"))
+    )
+    gross_margin_rate = (
+        round_rate(gross_margin_rate_raw) if gross_margin_rate_raw > 0 else Decimal("0")
+    )
 
     if gross_margin_rate_raw <= 0:
-        break_even_revenue = float("inf")
-        achievement_rate = 0.0
+        break_even_revenue = None
+        achievement_rate = Decimal("0")
         delta_revenue = -fixed_cost_total
     else:
         break_even_value = fixed_cost_total / gross_margin_rate_raw
         break_even_revenue = break_even_value
-        achievement_rate = revenue / break_even_value if break_even_value > 0 else 0.0
+        achievement_rate = (
+            revenue / break_even_value if break_even_value > 0 else Decimal("0")
+        )
         delta_revenue = revenue - break_even_value
 
-    if achievement_rate >= 1.0:
+    if achievement_rate >= Decimal("1"):
         status = "safe"
-    elif achievement_rate >= 0.8:
+    elif achievement_rate >= Decimal("0.8"):
         status = "warning"
     else:
         status = "danger"
@@ -143,12 +190,14 @@ def get_break_even(
         year_month=year_month,
         fixed_costs=round_jpy(fixed_cost_total),
         current_revenue=round_jpy(revenue),
-        variable_cost_rate=variable_cost_rate,
-        gross_margin_rate=gross_margin_rate,
+        variable_cost_rate=float(variable_cost_rate),
+        gross_margin_rate=float(gross_margin_rate),
         break_even_revenue=round_jpy(break_even_revenue)
-        if break_even_revenue != float("inf")
+        if break_even_revenue is not None
         else 0,
-        achievement_rate=round_rate(achievement_rate) if achievement_rate else 0.0,
+        achievement_rate=float(round_rate(achievement_rate))
+        if achievement_rate > 0
+        else 0.0,
         delta_revenue=round_jpy(delta_revenue),
         status=status,
     )
@@ -180,26 +229,28 @@ def _cell_value(sheet, column_letter: str, row_index: int) -> Any:
     return cell.value
 
 
-def _normalize_rate(value: Any) -> Optional[float]:
+def _normalize_rate(value: Any) -> Optional[Decimal]:
     if value is None:
         return None
     try:
-        numeric = float(value)
-        if numeric > 1:
-            numeric = numeric / 100
-        return round_rate(numeric)
-    except (TypeError, ValueError):
+        numeric = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
         return None
+    if numeric > Decimal("1"):
+        numeric = numeric / Decimal("100")
+    if numeric < Decimal("0"):
+        return None
+    return round_rate(numeric)
 
 
-def _normalize_currency(value: Any) -> Optional[float]:
+def _normalize_currency(value: Any) -> Optional[Decimal]:
     if value is None:
         return None
     try:
-        numeric = float(value)
-        return numeric * 1000  # 千円/kg -> 円/kg
-    except (TypeError, ValueError):
+        numeric = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
         return None
+    return (numeric * Decimal("1000")).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
 
 @app.post("/api/import/excel", response_model=ExcelImportResponse)
